@@ -16,16 +16,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Room not found or already full" }, { status: 404 });
   }
 
-  // Notify player 1 that someone joined
   const pusher = getPusherServer();
-  await pusher.trigger(`game-${roomId}`, "player-joined", {
-    game: getPlayerView(game, game.players[0]!.id),
-  });
+  // Notify player 1 that someone joined
+  for (const player of game.players) {
+    if (player) {
+      await pusher.trigger(`game-${roomId}`, `state-${player.id}`, {
+        game: getPlayerView(game, player.id),
+      });
+    }
+  }
 
   return NextResponse.json({
     roomId: game.roomId,
     playerId,
     playerIndex: 1,
-    game: getPlayerView(game, playerId),
+    mode: "multiplayer",
   });
 }

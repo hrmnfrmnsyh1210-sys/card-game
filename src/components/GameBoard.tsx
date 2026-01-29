@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { GameState, BattleResult as BattleResultType, RoomInfo } from "@/types/game";
 import { getPusherClient } from "@/lib/pusher-client";
 import Card from "./Card";
@@ -8,6 +8,8 @@ import HealthBar from "./HealthBar";
 import BattleResult from "./BattleResult";
 import CardScanner from "./CardScanner";
 import PunishmentReveal from "./PunishmentReveal";
+import RoomLobby from "./RoomLobby";
+import Timer from "./Timer";
 
 interface GameBoardProps {
   roomInfo: RoomInfo;
@@ -18,9 +20,13 @@ const MAX_HP = 100000;
 export default function GameBoard({ roomInfo }: GameBoardProps) {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [selectedCard, setSelectedCard] = useState<number | null>(null);
+  const [hasSubmitted, setHasSubmitted] = useState(false);
   const [lastBattle, setLastBattle] = useState<BattleResultType | null>(null);
   const [loading, setLoading] = useState(false);
   const [showBattle, setShowBattle] = useState(false);
+  const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isSolo = roomInfo.mode === "solo";
 
   const fetchGameState = useCallback(async () => {
     const res = await fetch("/api/game-state", {
@@ -37,30 +43,90 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     }
   }, [roomInfo]);
 
+  // Initial fetch
   useEffect(() => {
     fetchGameState();
+  }, [fetchGameState]);
+
+  // Pusher (multiplayer)
+  useEffect(() => {
+    if (isSolo) return;
 
     const pusher = getPusherClient();
     const channel = pusher.subscribe(`game-${roomInfo.roomId}`);
 
-    channel.bind("player-joined", (data: { game: GameState }) => {
-      setGameState(data.game);
-    });
-
-    channel.bind(`state-${roomInfo.playerId}`, (data: { game: GameState; battleResult: BattleResultType | null }) => {
-      setGameState(data.game);
-      if (data.battleResult) {
-        setLastBattle(data.battleResult);
-        setShowBattle(true);
-        setTimeout(() => setShowBattle(false), 3000);
+    channel.bind(
+      `state-${roomInfo.playerId}`,
+      (data: { game: GameState; battleResult?: BattleResultType }) => {
+        setGameState(data.game);
+        if (data.battleResult) {
+          setLastBattle(data.battleResult);
+          setShowBattle(true);
+          setHasSubmitted(false);
+          setSelectedCard(null);
+          setTimeout(() => setShowBattle(false), 3500);
+        }
+        // New round started → reset submission
+        if (data.game.currentRound && !data.battleResult) {
+          setHasSubmitted(false);
+          setSelectedCard(null);
+        }
       }
+    );
+
+    channel.bind(`selected-${roomInfo.playerId}`, () => {
+      setHasSubmitted(true);
     });
 
     return () => {
       channel.unbind_all();
       pusher.unsubscribe(`game-${roomInfo.roomId}`);
     };
-  }, [roomInfo, fetchGameState]);
+  }, [roomInfo, isSolo]);
+
+  // Bot auto-select (solo mode)
+  useEffect(() => {
+    if (!isSolo || !gameState || gameState.phase !== "playing") return;
+    if (!gameState.currentRound) return;
+
+    // Bot needs to select (player2CardIndex is hidden from view, so trigger via API)
+    const delay = 1000 + Math.random() * 2000;
+    botTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/bot-play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            roomId: roomInfo.roomId,
+            playerId: roomInfo.playerId,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.game) setGameState(data.game);
+          if (data.battleResult) {
+            setLastBattle(data.battleResult);
+            setShowBattle(true);
+            setHasSubmitted(false);
+            setSelectedCard(null);
+            setTimeout(() => setShowBattle(false), 3500);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, delay);
+
+    return () => {
+      if (botTimerRef.current) clearTimeout(botTimerRef.current);
+    };
+  }, [isSolo, gameState, roomInfo]);
+
+  // ─── Handlers ──────────────────────────────────────────────
+
+  function handleGameStateChange(gs: GameState) {
+    setGameState(gs);
+  }
 
   async function handleScanComplete(cardIds: string[]) {
     setLoading(true);
@@ -83,12 +149,12 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     }
   }
 
-  async function handleAttack() {
-    if (selectedCard === null || loading) return;
+  async function handleConfirmCard() {
+    if (selectedCard === null || hasSubmitted || loading) return;
     setLoading(true);
 
     try {
-      const res = await fetch("/api/play-card", {
+      const res = await fetch("/api/select-card", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -97,63 +163,75 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
           cardIndex: selectedCard,
         }),
       });
-
       if (res.ok) {
         const data = await res.json();
         setGameState(data.game);
+        setHasSubmitted(true);
         if (data.battleResult) {
           setLastBattle(data.battleResult);
           setShowBattle(true);
-          setTimeout(() => setShowBattle(false), 3000);
+          setHasSubmitted(false);
+          setSelectedCard(null);
+          setTimeout(() => setShowBattle(false), 3500);
         }
       }
     } finally {
-      setSelectedCard(null);
       setLoading(false);
     }
   }
 
+  async function handleTimeout() {
+    try {
+      await fetch("/api/timeout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId: roomInfo.roomId }),
+      });
+      // State will come via Pusher or we fetch
+      if (isSolo) {
+        await fetchGameState();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // ─── Render ────────────────────────────────────────────────
+
   if (!gameState) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="text-white text-xl">Loading game...</div>
+        <div className="text-white text-xl animate-pulse">Loading game...</div>
       </div>
     );
   }
 
   const me = gameState.players[roomInfo.playerIndex];
   const opponent = gameState.players[roomInfo.playerIndex === 0 ? 1 : 0];
-  const isMyTurn = gameState.currentTurn === roomInfo.playerIndex;
 
-  // Waiting for opponent
-  if (gameState.phase === "waiting") {
+  // ── LOBBY ──
+  if (gameState.phase === "lobby") {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
-        <div className="text-center space-y-4">
-          <div className="text-6xl animate-pulse">⏳</div>
-          <h2 className="text-2xl font-bold text-white">Menunggu lawan...</h2>
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <p className="text-gray-400 text-sm mb-2">Bagikan kode room ini:</p>
-            <p className="text-4xl font-mono font-bold text-yellow-400 tracking-widest">
-              {roomInfo.roomId}
-            </p>
-          </div>
-        </div>
-      </div>
+      <RoomLobby
+        roomInfo={roomInfo}
+        gameState={gameState}
+        onGameStateChange={handleGameStateChange}
+      />
     );
   }
 
-  // Scanning phase
+  // ── SCANNING ──
   if (gameState.phase === "scanning") {
     if (me && me.ready) {
-      // Already submitted, waiting for opponent
       return (
         <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
           <div className="text-center space-y-4">
             <div className="text-6xl animate-pulse">✅</div>
             <h2 className="text-2xl font-bold text-white">Kartu siap!</h2>
-            <p className="text-gray-400">Menunggu lawan selesai scan kartunya...</p>
-            <div className="flex justify-center gap-2">
+            <p className="text-gray-400">
+              {isSolo ? "Memulai pertarungan..." : "Menunggu lawan selesai scan..."}
+            </p>
+            <div className="flex justify-center gap-2 flex-wrap">
               {me.hand.map((card) => (
                 <Card key={card.id} card={card} disabled />
               ))}
@@ -162,31 +240,34 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         </div>
       );
     }
-
-    // Show scanner
     return <CardScanner onComplete={handleScanComplete} maxCards={4} />;
   }
 
-  // Game finished
+  // ── FINISHED ──
   if (gameState.phase === "finished") {
     const isWinner = gameState.winner === roomInfo.playerId;
-    const loserName = isWinner ? (opponent?.name || "Lawan") : (me?.name || "Kamu");
+    const loserName = isWinner
+      ? opponent?.name || "Lawan"
+      : me?.name || "Kamu";
 
     return (
       <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
         <div className="w-full max-w-md space-y-6">
-          {/* Result */}
           <div className="text-center space-y-2">
             <div className="text-6xl">{isWinner ? "🏆" : "💀"}</div>
-            <h2 className={`text-4xl font-bold ${isWinner ? "text-yellow-400" : "text-red-400"}`}>
+            <h2
+              className={`text-4xl font-bold ${
+                isWinner ? "text-yellow-400" : "text-red-400"
+              }`}
+            >
               {isWinner ? "VICTORY!" : "DEFEAT!"}
             </h2>
             <p className="text-gray-400">
-              {me?.name}: {me?.hp.toLocaleString()} HP | {opponent?.name}: {opponent?.hp.toLocaleString()} HP
+              {me?.name}: {me?.hp.toLocaleString()} HP |{" "}
+              {opponent?.name}: {opponent?.hp.toLocaleString()} HP
             </p>
           </div>
 
-          {/* Punishment */}
           {gameState.punishment && (
             <PunishmentReveal
               punishment={gameState.punishment}
@@ -194,7 +275,6 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
             />
           )}
 
-          {/* Play Again */}
           <div className="text-center">
             <button
               onClick={() => window.location.reload()}
@@ -208,81 +288,116 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     );
   }
 
-  // Playing phase
+  // ── PLAYING (Simultaneous Rounds) ──
+  const round = gameState.currentRound;
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-850 to-gray-950 flex flex-col p-4">
-      {/* Room ID */}
+      {/* Header */}
       <div className="text-center mb-2">
-        <span className="text-xs text-gray-500 font-mono">Room: {roomInfo.roomId}</span>
+        <span className="text-xs text-gray-500 font-mono">
+          {isSolo ? "Solo vs Bot" : `Room: ${roomInfo.roomId}`}
+        </span>
+        {round && (
+          <span className="text-xs text-gray-600 ml-2">
+            Round {round.roundNumber}
+          </span>
+        )}
       </div>
 
       {/* Opponent Area */}
-      <div className="space-y-3">
+      <div className="space-y-2">
         {opponent && (
-          <HealthBar current={opponent.hp} max={MAX_HP} name={opponent.name || "Opponent"} />
+          <HealthBar
+            current={opponent.hp}
+            max={MAX_HP}
+            name={opponent.name || "Opponent"}
+          />
         )}
         <div className="flex justify-center gap-2">
           {opponent?.hand.map((card, i) => (
             <Card key={i} card={card} faceDown disabled />
           ))}
           {(!opponent || opponent.hand.length === 0) && (
-            <div className="text-gray-600 text-sm py-4">Tidak ada kartu</div>
+            <div className="text-gray-600 text-sm py-2">Tidak ada kartu</div>
           )}
         </div>
       </div>
 
       {/* Battle Zone */}
-      <div className="flex-1 flex items-center justify-center py-4">
-        <div className="text-center space-y-2">
-          {showBattle && lastBattle ? (
-            <BattleResult result={lastBattle} currentPlayerId={roomInfo.playerId} />
-          ) : (
-            <div
-              className={`text-lg font-bold px-6 py-2 rounded-full ${
-                isMyTurn
-                  ? "bg-green-900/50 text-green-400 border border-green-600"
-                  : "bg-red-900/50 text-red-400 border border-red-600"
-              }`}
-            >
-              {isMyTurn ? "Giliranmu! Pilih kartu & serang!" : "Giliran lawan..."}
-            </div>
-          )}
-        </div>
+      <div className="flex-1 flex flex-col items-center justify-center py-3 gap-3">
+        {/* Timer */}
+        {round && !hasSubmitted && !showBattle && (
+          <Timer timeoutAt={round.timeoutAt} onTimeout={handleTimeout} />
+        )}
+
+        {/* Battle Result */}
+        {showBattle && lastBattle && (
+          <BattleResult
+            result={lastBattle}
+            player1Name={gameState.players[0]?.name || "Player 1"}
+            player2Name={gameState.players[1]?.name || "Player 2"}
+            myPlayerIndex={roomInfo.playerIndex}
+          />
+        )}
+
+        {/* Status */}
+        {!showBattle && (
+          <div
+            className={`text-sm font-bold px-4 py-2 rounded-full ${
+              hasSubmitted
+                ? "bg-blue-900/50 text-blue-400 border border-blue-600"
+                : "bg-green-900/50 text-green-400 border border-green-600"
+            }`}
+          >
+            {hasSubmitted
+              ? "Kartu dipilih! Menunggu lawan..."
+              : "Pilih kartu dan konfirmasi!"}
+          </div>
+        )}
       </div>
 
       {/* My Area */}
       <div className="space-y-3">
+        {/* My Cards */}
         <div className="flex justify-center gap-2 flex-wrap">
           {me?.hand.map((card, i) => (
             <Card
               key={`${card.id}-${i}`}
               card={card}
-              onClick={() => isMyTurn && setSelectedCard(i)}
+              onClick={() => !hasSubmitted && setSelectedCard(i)}
               selected={selectedCard === i}
-              disabled={!isMyTurn || loading}
+              disabled={hasSubmitted || loading}
             />
           ))}
           {(!me || me.hand.length === 0) && (
-            <div className="text-gray-600 text-sm py-4">Tidak ada kartu</div>
+            <div className="text-gray-600 text-sm py-2">Tidak ada kartu</div>
           )}
         </div>
 
-        {isMyTurn && selectedCard !== null && (
+        {/* Confirm Button */}
+        {selectedCard !== null && !hasSubmitted && (
           <div className="flex justify-center">
             <button
-              onClick={handleAttack}
+              onClick={handleConfirmCard}
               disabled={loading}
               className="px-8 py-3 bg-gradient-to-r from-red-600 to-orange-600 text-white font-bold text-lg
                 rounded-lg hover:from-red-500 hover:to-orange-500 transition-all
                 disabled:opacity-50 animate-pulse"
             >
-              {loading ? "Menyerang..." : "SERANG!"}
+              {loading ? "Memilih..." : "Konfirmasi Pilihan!"}
             </button>
           </div>
         )}
 
+        {/* My HP */}
         {me && (
-          <HealthBar current={me.hp} max={MAX_HP} name={me.name} isCurrentPlayer />
+          <HealthBar
+            current={me.hp}
+            max={MAX_HP}
+            name={me.name}
+            isCurrentPlayer
+          />
         )}
       </div>
     </div>

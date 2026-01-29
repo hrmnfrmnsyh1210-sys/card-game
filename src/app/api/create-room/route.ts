@@ -2,19 +2,21 @@ import { NextResponse } from "next/server";
 import { createGame, generateRoomId } from "@/lib/game-logic";
 
 export async function POST(req: Request) {
-  const { playerName } = await req.json();
+  const { playerName, mode } = await req.json();
 
   if (!playerName || typeof playerName !== "string") {
     return NextResponse.json({ error: "Player name required" }, { status: 400 });
   }
 
+  const gameMode = mode === "solo" ? "solo" : "multiplayer";
   const roomId = generateRoomId();
   const playerId = crypto.randomUUID();
-  const game = createGame(roomId, playerId, playerName.trim());
+  createGame(roomId, playerId, playerName.trim(), gameMode);
 
   return NextResponse.json({
-    roomId: game.roomId,
+    roomId,
     playerId,
     playerIndex: 0,
+    mode: gameMode,
   });
 }

@@ -14,15 +14,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to submit hand" }, { status: 400 });
   }
 
-  const pusher = getPusherServer();
-
-  // Notify both players about state change
-  for (const player of game.players) {
-    if (player) {
-      await pusher.trigger(`game-${roomId}`, `state-${player.id}`, {
-        game: getPlayerView(game, player.id),
-        battleResult: null,
-      });
+  // Only use Pusher for multiplayer
+  if (game.mode === "multiplayer") {
+    const pusher = getPusherServer();
+    for (const player of game.players) {
+      if (player) {
+        await pusher.trigger(`game-${roomId}`, `state-${player.id}`, {
+          game: getPlayerView(game, player.id),
+        });
+      }
     }
   }
 
