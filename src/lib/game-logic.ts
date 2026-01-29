@@ -1,8 +1,8 @@
-import { GameState, Player, BattleResult, Card } from "@/types/game";
-import { getRandomHand } from "@/data/cards";
+import { GameState, Player, BattleResult, Card, Punishment } from "@/types/game";
+import { ALL_CARDS } from "@/data/cards";
+import { getRandomPunishment } from "@/data/punishments";
 
 const INITIAL_HP = 100000;
-const HAND_SIZE = 4;
 
 // In-memory game store (reset on server restart)
 const games = new Map<string, GameState>();
@@ -16,8 +16,9 @@ export function createGame(roomId: string, playerId: string, playerName: string)
     id: playerId,
     name: playerName,
     hp: INITIAL_HP,
-    hand: getRandomHand(HAND_SIZE),
+    hand: [],
     selectedCardIndex: null,
+    ready: false,
   };
 
   const game: GameState = {
@@ -27,6 +28,7 @@ export function createGame(roomId: string, playerId: string, playerName: string)
     currentTurn: 0,
     battleLog: [],
     winner: null,
+    punishment: null,
   };
 
   games.set(roomId, game);
@@ -43,12 +45,50 @@ export function joinGame(roomId: string, playerId: string, playerName: string): 
     id: playerId,
     name: playerName,
     hp: INITIAL_HP,
-    hand: getRandomHand(HAND_SIZE),
+    hand: [],
     selectedCardIndex: null,
+    ready: false,
   };
 
   game.players[1] = player;
-  game.phase = "playing";
+  game.phase = "scanning"; // Go to scanning phase instead of playing
+  return game;
+}
+
+export function submitHand(
+  roomId: string,
+  playerId: string,
+  cardIds: string[]
+): GameState | null {
+  const game = games.get(roomId);
+  if (!game || game.phase !== "scanning") return null;
+
+  const playerIndex = game.players.findIndex((p) => p?.id === playerId);
+  if (playerIndex === -1) return null;
+
+  const player = game.players[playerIndex]!;
+  if (player.ready) return null; // Already submitted
+
+  // Resolve card IDs to actual cards
+  const hand: Card[] = [];
+  for (const cardId of cardIds) {
+    const card = ALL_CARDS.find((c) => c.id === cardId);
+    if (card) {
+      hand.push({ ...card });
+    }
+  }
+
+  if (hand.length === 0) return null;
+
+  player.hand = hand;
+  player.ready = true;
+
+  // Check if both players are ready
+  const bothReady = game.players[0]?.ready && game.players[1]?.ready;
+  if (bothReady) {
+    game.phase = "playing";
+  }
+
   return game;
 }
 
@@ -96,12 +136,14 @@ export function playCard(
   if (opponent.hp <= 0) {
     game.phase = "finished";
     game.winner = currentPlayer.id;
+    game.punishment = getRandomPunishment();
   } else if (currentPlayer.hand.length === 0 && opponent.hand.length === 0) {
     // Both out of cards - higher HP wins
     game.phase = "finished";
     const p0 = game.players[0]!;
     const p1 = game.players[1]!;
     game.winner = p0.hp >= p1.hp ? p0.id : p1.id;
+    game.punishment = getRandomPunishment();
   } else {
     // Switch turn
     game.currentTurn = opponentIndex;
@@ -117,7 +159,6 @@ function getAverageDefense(hand: Card[]): number {
 }
 
 export function getPlayerView(game: GameState, playerId: string): GameState {
-  // Return a copy where opponent's hand cards are hidden (no details)
   const playerIndex = game.players.findIndex((p) => p?.id === playerId);
   const opponentIndex = playerIndex === 0 ? 1 : 0;
 
@@ -125,15 +166,20 @@ export function getPlayerView(game: GameState, playerId: string): GameState {
 
   if (view.players[opponentIndex]) {
     const opponent = view.players[opponentIndex]!;
-    opponent.hand = opponent.hand.map(() => ({
-      id: "hidden",
-      name: "???",
-      type: "zombie" as const,
-      rarity: "R" as const,
-      atk: 0,
-      def: 0,
-      image: "",
-    }));
+    // During scanning, hide opponent's readiness details
+    if (view.phase === "scanning") {
+      opponent.hand = [];
+    } else {
+      opponent.hand = opponent.hand.map(() => ({
+        id: "hidden",
+        name: "???",
+        type: "zombie" as const,
+        rarity: "R" as const,
+        atk: 0,
+        def: 0,
+        image: "",
+      }));
+    }
     opponent.selectedCardIndex = null;
   }
 

@@ -6,6 +6,8 @@ import { getPusherClient } from "@/lib/pusher-client";
 import Card from "./Card";
 import HealthBar from "./HealthBar";
 import BattleResult from "./BattleResult";
+import CardScanner from "./CardScanner";
+import PunishmentReveal from "./PunishmentReveal";
 
 interface GameBoardProps {
   roomInfo: RoomInfo;
@@ -45,7 +47,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
       setGameState(data.game);
     });
 
-    channel.bind(`state-${roomInfo.playerId}`, (data: { game: GameState; battleResult: BattleResultType }) => {
+    channel.bind(`state-${roomInfo.playerId}`, (data: { game: GameState; battleResult: BattleResultType | null }) => {
       setGameState(data.game);
       if (data.battleResult) {
         setLastBattle(data.battleResult);
@@ -59,6 +61,27 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
       pusher.unsubscribe(`game-${roomInfo.roomId}`);
     };
   }, [roomInfo, fetchGameState]);
+
+  async function handleScanComplete(cardIds: string[]) {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/submit-hand", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId: roomInfo.roomId,
+          playerId: roomInfo.playerId,
+          cardIds,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGameState(data.game);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleAttack() {
     if (selectedCard === null || loading) return;
@@ -108,9 +131,9 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
       <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
         <div className="text-center space-y-4">
           <div className="text-6xl animate-pulse">⏳</div>
-          <h2 className="text-2xl font-bold text-white">Waiting for opponent...</h2>
+          <h2 className="text-2xl font-bold text-white">Menunggu lawan...</h2>
           <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <p className="text-gray-400 text-sm mb-2">Share this room code:</p>
+            <p className="text-gray-400 text-sm mb-2">Bagikan kode room ini:</p>
             <p className="text-4xl font-mono font-bold text-yellow-400 tracking-widest">
               {roomInfo.roomId}
             </p>
@@ -120,30 +143,72 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     );
   }
 
+  // Scanning phase
+  if (gameState.phase === "scanning") {
+    if (me && me.ready) {
+      // Already submitted, waiting for opponent
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
+          <div className="text-center space-y-4">
+            <div className="text-6xl animate-pulse">✅</div>
+            <h2 className="text-2xl font-bold text-white">Kartu siap!</h2>
+            <p className="text-gray-400">Menunggu lawan selesai scan kartunya...</p>
+            <div className="flex justify-center gap-2">
+              {me.hand.map((card) => (
+                <Card key={card.id} card={card} disabled />
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Show scanner
+    return <CardScanner onComplete={handleScanComplete} maxCards={4} />;
+  }
+
   // Game finished
   if (gameState.phase === "finished") {
     const isWinner = gameState.winner === roomInfo.playerId;
+    const loserName = isWinner ? (opponent?.name || "Lawan") : (me?.name || "Kamu");
+
     return (
       <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-950 flex items-center justify-center p-4">
-        <div className="text-center space-y-4">
-          <div className="text-6xl">{isWinner ? "🏆" : "💀"}</div>
-          <h2 className={`text-4xl font-bold ${isWinner ? "text-yellow-400" : "text-red-400"}`}>
-            {isWinner ? "VICTORY!" : "DEFEAT!"}
-          </h2>
-          <p className="text-gray-400">
-            {me?.name}: {me?.hp.toLocaleString()} HP | {opponent?.name}: {opponent?.hp.toLocaleString()} HP
-          </p>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 transition-colors"
-          >
-            Play Again
-          </button>
+        <div className="w-full max-w-md space-y-6">
+          {/* Result */}
+          <div className="text-center space-y-2">
+            <div className="text-6xl">{isWinner ? "🏆" : "💀"}</div>
+            <h2 className={`text-4xl font-bold ${isWinner ? "text-yellow-400" : "text-red-400"}`}>
+              {isWinner ? "VICTORY!" : "DEFEAT!"}
+            </h2>
+            <p className="text-gray-400">
+              {me?.name}: {me?.hp.toLocaleString()} HP | {opponent?.name}: {opponent?.hp.toLocaleString()} HP
+            </p>
+          </div>
+
+          {/* Punishment */}
+          {gameState.punishment && (
+            <PunishmentReveal
+              punishment={gameState.punishment}
+              loserName={loserName}
+            />
+          )}
+
+          {/* Play Again */}
+          <div className="text-center">
+            <button
+              onClick={() => window.location.reload()}
+              className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 transition-colors"
+            >
+              Main Lagi
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
+  // Playing phase
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-850 to-gray-950 flex flex-col p-4">
       {/* Room ID */}
@@ -156,13 +221,12 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         {opponent && (
           <HealthBar current={opponent.hp} max={MAX_HP} name={opponent.name || "Opponent"} />
         )}
-        {/* Opponent's cards (face down) */}
         <div className="flex justify-center gap-2">
           {opponent?.hand.map((card, i) => (
             <Card key={i} card={card} faceDown disabled />
           ))}
           {(!opponent || opponent.hand.length === 0) && (
-            <div className="text-gray-600 text-sm py-4">No cards</div>
+            <div className="text-gray-600 text-sm py-4">Tidak ada kartu</div>
           )}
         </div>
       </div>
@@ -180,7 +244,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
                   : "bg-red-900/50 text-red-400 border border-red-600"
               }`}
             >
-              {isMyTurn ? "⚔️ Your Turn!" : "⏳ Opponent's Turn..."}
+              {isMyTurn ? "Giliranmu! Pilih kartu & serang!" : "Giliran lawan..."}
             </div>
           )}
         </div>
@@ -188,7 +252,6 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
 
       {/* My Area */}
       <div className="space-y-3">
-        {/* My cards */}
         <div className="flex justify-center gap-2 flex-wrap">
           {me?.hand.map((card, i) => (
             <Card
@@ -200,11 +263,10 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
             />
           ))}
           {(!me || me.hand.length === 0) && (
-            <div className="text-gray-600 text-sm py-4">No cards left</div>
+            <div className="text-gray-600 text-sm py-4">Tidak ada kartu</div>
           )}
         </div>
 
-        {/* Attack Button */}
         {isMyTurn && selectedCard !== null && (
           <div className="flex justify-center">
             <button
@@ -214,7 +276,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
                 rounded-lg hover:from-red-500 hover:to-orange-500 transition-all
                 disabled:opacity-50 animate-pulse"
             >
-              {loading ? "Attacking..." : "⚔️ ATTACK!"}
+              {loading ? "Menyerang..." : "SERANG!"}
             </button>
           </div>
         )}

@@ -17,6 +17,7 @@ export interface Player {
   hp: number;
   hand: Card[];
   selectedCardIndex: number | null;
+  ready: boolean; // true when done scanning cards
 }
 
 export interface BattleResult {
@@ -30,8 +31,16 @@ export interface BattleResult {
 
 export type GamePhase =
   | "waiting"      // waiting for player 2
+  | "scanning"     // both players scanning their cards
   | "playing"      // game in progress
   | "finished";    // game over
+
+export interface Punishment {
+  id: number;
+  text: string;
+  emoji: string;
+  category: string;
+}
 
 export interface GameState {
   roomId: string;
@@ -40,6 +49,7 @@ export interface GameState {
   currentTurn: number; // index 0 or 1
   battleLog: BattleResult[];
   winner: string | null;
+  punishment: Punishment | null;
 }
 
 export interface RoomInfo {
