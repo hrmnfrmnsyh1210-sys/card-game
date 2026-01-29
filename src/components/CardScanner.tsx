@@ -63,6 +63,13 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
     return () => stopCamera();
   }, [stopCamera]);
 
+  // Attach stream to video element when both are ready
+  useEffect(() => {
+    if (videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [scanStatus]); // re-run when status changes (video element mounts)
+
   async function startCamera() {
     setCameraError("");
     try {
@@ -74,9 +81,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
         },
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+      // Set status first so video element mounts, then useEffect attaches stream
       setScanStatus("camera-on");
     } catch {
       setCameraError("Gagal membuka kamera. Pastikan izin kamera sudah diberikan.");
