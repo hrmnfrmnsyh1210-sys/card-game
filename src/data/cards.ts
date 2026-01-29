@@ -57,58 +57,130 @@ export const ALL_CARDS: Card[] = [
   },
 ];
 
-// Keywords for OCR matching - all lowercase
-// Includes card name, ID, and common OCR misreads
-const CARD_KEYWORDS: Record<string, string[]> = {
-  "PZIT01-R-004": ["cabbage", "pult", "cabbage-pult", "cabbagepult", "pzit01-r-004", "r-004", "r004"],
-  "PZIT01-R-029": ["imp", "pzit01-r-029", "r-029", "r029"],
-  "PZIT01-R-002": ["peashooter", "pea", "shooter", "pzit01-r-002", "r-002", "r002"],
-  "PZIT01-R-010": ["sunflower", "sun", "flower", "pzit01-r-010", "r-010", "r010"],
-  "PZIT01-R-025": ["browncoat", "zombie", "browncoat zombie", "pzit01-r-025", "r-025", "r025"],
-  "PZIT01-R-030": ["conehead", "cone", "head", "conehead zombie", "pzit01-r-030", "r-030", "r030"],
+// ─── OCR Matching ────────────────────────────────────────────
+
+// Name keywords (lowercase, includes partial/common OCR misreads)
+const NAME_KEYWORDS: Record<string, string[]> = {
+  "PZIT01-R-004": ["cabbage", "pult", "cabbage-pult", "cabbagepult", "gabbage", "cabb"],
+  "PZIT01-R-029": ["imp"],
+  "PZIT01-R-002": ["peashooter", "pea", "shooter", "peasho"],
+  "PZIT01-R-010": ["sunflower", "sun", "flower", "sunf"],
+  "PZIT01-R-025": ["browncoat", "zombie", "brown"],
+  "PZIT01-R-030": ["conehead", "cone", "head"],
 };
 
+// ATK/DEF number pairs for matching (unique per card)
+const STAT_PAIRS: Record<string, [number, number]> = {
+  "PZIT01-R-004": [12000, 12000],
+  "PZIT01-R-029": [18000, 14000],
+  "PZIT01-R-002": [15000, 10000],
+  "PZIT01-R-010": [8000, 16000],
+  "PZIT01-R-025": [13000, 11000],
+  "PZIT01-R-030": [14000, 15000],
+};
+
+// All unique stat numbers mapped to possible card IDs
+const NUMBER_TO_CARDS: Record<number, string[]> = {};
+for (const [cardId, [atk, def]] of Object.entries(STAT_PAIRS)) {
+  if (!NUMBER_TO_CARDS[atk]) NUMBER_TO_CARDS[atk] = [];
+  if (!NUMBER_TO_CARDS[def]) NUMBER_TO_CARDS[def] = [];
+  NUMBER_TO_CARDS[atk].push(cardId);
+  NUMBER_TO_CARDS[def].push(cardId);
+}
+
 /**
- * Match OCR text against card database.
- * Returns the best matching card or null.
+ * Extract all numbers from OCR text
+ */
+function extractNumbers(text: string): number[] {
+  const matches = text.match(/\d{4,6}/g);
+  if (!matches) return [];
+  return matches.map(Number);
+}
+
+/**
+ * Match OCR text against card database using multiple strategies.
  */
 export function matchCardFromText(ocrText: string): Card | null {
-  const text = ocrText.toLowerCase().replace(/[^a-z0-9\-\s]/g, "");
+  const textLower = ocrText.toLowerCase();
+  const textClean = textLower.replace(/[^a-z0-9\s\-]/g, "");
+  const textAlphaOnly = textClean.replace(/[^a-z]/g, "");
 
-  let bestCard: Card | null = null;
-  let bestScore = 0;
+  const scores: Record<string, number> = {};
 
   for (const card of ALL_CARDS) {
-    const keywords = CARD_KEYWORDS[card.id] || [];
-    let score = 0;
+    scores[card.id] = 0;
+  }
 
-    for (const keyword of keywords) {
-      if (text.includes(keyword)) {
-        // Longer keyword match = higher score
-        score += keyword.length;
+  // ── Strategy 1: Card ID match (strongest signal) ──
+  for (const card of ALL_CARDS) {
+    const idLower = card.id.toLowerCase();
+    // Full ID
+    if (textClean.includes(idLower) || textClean.replace(/\s/g, "").includes(idLower.replace(/-/g, ""))) {
+      scores[card.id] += 50;
+    }
+    // Partial ID (e.g., "r-004", "r004", "004")
+    const idParts = idLower.split("-");
+    for (const part of idParts) {
+      if (part.length >= 3 && textClean.includes(part)) {
+        scores[card.id] += 8;
       }
-    }
-
-    // Also try matching the card ID directly
-    const idClean = card.id.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (text.replace(/[^a-z0-9]/g, "").includes(idClean)) {
-      score += 20; // Strong match
-    }
-
-    // Match card name directly
-    const nameClean = card.name.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (text.replace(/[^a-z0-9]/g, "").includes(nameClean)) {
-      score += 15;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestCard = card;
     }
   }
 
-  // Require minimum confidence
-  return bestScore >= 3 ? bestCard : null;
+  // ── Strategy 2: Name keyword match ──
+  for (const [cardId, keywords] of Object.entries(NAME_KEYWORDS)) {
+    for (const kw of keywords) {
+      if (textClean.includes(kw) || textAlphaOnly.includes(kw.replace(/[^a-z]/g, ""))) {
+        scores[cardId] += kw.length * 2;
+      }
+    }
+  }
+
+  // ── Strategy 3: Number/stat match (ATK/DEF values) ──
+  const numbers = extractNumbers(ocrText);
+  for (const num of numbers) {
+    // Exact number match
+    if (NUMBER_TO_CARDS[num]) {
+      for (const cardId of NUMBER_TO_CARDS[num]) {
+        scores[cardId] += 10;
+      }
+    }
+    // Check if both ATK and DEF found → very strong match
+    for (const [cardId, [atk, def]] of Object.entries(STAT_PAIRS)) {
+      if (numbers.includes(atk) && numbers.includes(def)) {
+        scores[cardId] += 30;
+      }
+    }
+  }
+
+  // ── Strategy 4: Card name direct match ──
+  for (const card of ALL_CARDS) {
+    const nameLower = card.name.toLowerCase();
+    const nameClean = nameLower.replace(/[^a-z]/g, "");
+    if (textAlphaOnly.includes(nameClean)) {
+      scores[card.id] += 25;
+    }
+    // First word of name (e.g., "cabbage", "imp", "peashooter")
+    const firstName = nameLower.split(/[\s\-]/)[0];
+    if (firstName.length >= 3 && textAlphaOnly.includes(firstName)) {
+      scores[card.id] += 12;
+    }
+  }
+
+  // Find best match
+  let bestId = "";
+  let bestScore = 0;
+  for (const [cardId, score] of Object.entries(scores)) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = cardId;
+    }
+  }
+
+  // Minimum confidence threshold
+  if (bestScore < 6) return null;
+
+  return ALL_CARDS.find((c) => c.id === bestId) || null;
 }
 
 export function getRandomHand(count: number): Card[] {
