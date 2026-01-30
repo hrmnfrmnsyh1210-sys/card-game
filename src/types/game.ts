@@ -1,5 +1,5 @@
 export type CardType = "plant" | "zombie";
-export type Rarity = "R" | "SR" | "SSR";
+export type Rarity = string; // R, SR, SSR, atau apapun yang terbaca dari kartu
 
 export interface Card {
   id: string;

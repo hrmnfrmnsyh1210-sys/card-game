@@ -137,7 +137,10 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         body: JSON.stringify({
           roomId: roomInfo.roomId,
           playerId: roomInfo.playerId,
-          cards, // { cardId, capturedImage }[]
+          scannedCards: cards.map((c) => ({
+            card: c.card,
+            capturedImage: c.capturedImage,
+          })),
         }),
       });
       if (res.ok) {

@@ -128,7 +128,7 @@ export function startGame(roomId: string, playerId: string): GameState | null {
 export function submitHand(
   roomId: string,
   playerId: string,
-  cardEntries: { cardId: string; capturedImage?: string }[]
+  cards: Card[]
 ): GameState | null {
   const game = games.get(roomId);
   if (!game || game.phase !== "scanning") return null;
@@ -139,19 +139,9 @@ export function submitHand(
   const player = game.players[playerIndex]!;
   if (player.ready) return null;
 
-  const hand: Card[] = [];
-  for (const entry of cardEntries) {
-    const card = ALL_CARDS.find((c) => c.id === entry.cardId);
-    if (card) {
-      hand.push({
-        ...card,
-        capturedImage: entry.capturedImage || undefined,
-      });
-    }
-  }
-  if (hand.length === 0) return null;
+  if (cards.length === 0) return null;
 
-  player.hand = hand;
+  player.hand = cards;
   player.ready = true;
 
   // Both ready → start playing

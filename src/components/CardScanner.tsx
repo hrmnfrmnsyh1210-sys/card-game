@@ -6,7 +6,7 @@ import { ALL_CARDS } from "@/data/cards";
 import Card from "./Card";
 
 export interface ScannedCard {
-  cardId: string;
+  card: CardType;        // full card data (dari AI atau manual)
   capturedImage: string; // base64 foto dari kamera
 }
 
@@ -17,18 +17,13 @@ interface CardScannerProps {
 
 type ScanStatus = "idle" | "camera-on" | "analyzing" | "detected" | "not-found";
 
-interface ScannedEntry {
-  card: CardType;
-  capturedImage: string;
-}
-
 export default function CardScanner({ onComplete, maxCards }: CardScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
-  const [scannedCards, setScannedCards] = useState<ScannedEntry[]>([]);
+  const [scannedCards, setScannedCards] = useState<ScannedCard[]>([]);
   const [detectedCard, setDetectedCard] = useState<CardType | null>(null);
   const [lastCapturedImage, setLastCapturedImage] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -94,7 +89,6 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
     // Convert to base64 JPEG
     const imageData = canvas.toDataURL("image/jpeg", 0.85);
 
-    // Simpan foto untuk ditampilkan nanti
     setLastCapturedImage(imageData);
     setScanStatus("analyzing");
     setErrorMsg("");
@@ -116,10 +110,11 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       }
 
       if (data.success && data.card) {
+        // Card langsung dari AI - sudah punya nama, ATK, DEF, rarity, type
         const card = data.card as CardType;
 
-        // Check duplicate
-        if (scannedCards.find((c) => c.card.id === card.id)) {
+        // Check duplicate by name
+        if (scannedCards.find((c) => c.card.name === card.name)) {
           setErrorMsg(`${card.name} sudah di-scan!`);
           setScanStatus("not-found");
           setTimeout(() => setScanStatus("camera-on"), 2000);
@@ -129,7 +124,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
         setDetectedCard(card);
         setScanStatus("detected");
       } else {
-        setErrorMsg("AI tidak bisa mengenali kartu ini");
+        setErrorMsg(data.error || "AI tidak bisa membaca kartu ini");
         setScanStatus("not-found");
         setTimeout(() => setScanStatus("camera-on"), 2500);
       }
@@ -142,7 +137,11 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
   function confirmDetectedCard() {
     if (!detectedCard) return;
-    const newCards = [...scannedCards, { card: detectedCard, capturedImage: lastCapturedImage }];
+    const entry: ScannedCard = {
+      card: { ...detectedCard, capturedImage: lastCapturedImage },
+      capturedImage: lastCapturedImage,
+    };
+    const newCards = [...scannedCards, entry];
     setScannedCards(newCards);
     setDetectedCard(null);
     setLastCapturedImage("");
@@ -162,7 +161,6 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
   function handleManualSelect(card: CardType) {
     if (scannedCards.find((c) => c.card.id === card.id)) return;
-    // Manual mode: tidak ada foto, pakai empty string
     setScannedCards((prev) => [...prev, { card, capturedImage: "" }]);
   }
 
@@ -173,12 +171,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
   function handleSubmit() {
     if (scannedCards.length === 0) return;
     stopCamera();
-    onComplete(
-      scannedCards.map((entry) => ({
-        cardId: entry.card.id,
-        capturedImage: entry.capturedImage,
-      }))
-    );
+    onComplete(scannedCards);
   }
 
   const availableCards = ALL_CARDS.filter(
@@ -192,7 +185,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       <p className="text-gray-400 text-sm mb-4">
         {manualMode
           ? "Pilih kartu dari daftar"
-          : "Foto kartu fisikmu, AI akan mengenali kartunya"}{" "}
+          : "Foto kartu fisikmu, AI akan membaca datanya"}{" "}
         ({scannedCards.length}/{maxCards})
       </p>
 
@@ -223,7 +216,6 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       {/* ═══ CAMERA SCAN MODE ═══ */}
       {!manualMode && !doneScanning && (
         <div className="w-full max-w-sm mb-4">
-          {/* Camera not started */}
           {scanStatus === "idle" && !cameraError && (
             <div className="bg-gray-800 rounded-xl p-8 text-center">
               <div className="text-4xl mb-3">📷</div>
@@ -237,7 +229,6 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
             </div>
           )}
 
-          {/* Camera Error */}
           {cameraError && (
             <div className="bg-gray-800 rounded-xl p-6 text-center">
               <p className="text-red-400 text-sm mb-3">{cameraError}</p>
@@ -286,30 +277,28 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
                   {scanStatus === "camera-on" && (
                     <div className="absolute bottom-8 left-0 right-0 text-center">
                       <span className="text-white/80 text-xs bg-black/60 px-3 py-1.5 rounded-full">
-                        Posisikan kartu di dalam bingkai
+                        Arahkan kamera ke kartu, lalu tekan tombol foto
                       </span>
                     </div>
                   )}
                 </div>
 
-                {/* Analyzing overlay */}
                 {scanStatus === "analyzing" && (
                   <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
                     <div className="text-center">
                       <div className="text-4xl mb-3 animate-pulse">🤖</div>
-                      <p className="text-green-400 font-bold">AI sedang mengenali kartu...</p>
-                      <p className="text-gray-400 text-xs mt-1">Menganalisis gambar dengan AI</p>
+                      <p className="text-green-400 font-bold">AI sedang membaca kartu...</p>
+                      <p className="text-gray-400 text-xs mt-1">Membaca nama, ATK, DEF, rarity</p>
                     </div>
                   </div>
                 )}
 
-                {/* Not found overlay */}
                 {scanStatus === "not-found" && (
                   <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
                     <div className="text-center px-6">
                       <div className="text-3xl mb-2">❌</div>
                       <p className="text-red-400 font-bold text-sm">
-                        {errorMsg || "Kartu tidak dikenali"}
+                        {errorMsg || "Kartu tidak terbaca"}
                       </p>
                       <p className="text-gray-400 text-xs mt-1">
                         Pastikan seluruh kartu terlihat jelas
@@ -339,31 +328,38 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
           {/* Detected Card Confirmation */}
           {scanStatus === "detected" && detectedCard && (
-            <div className="mt-4 bg-gray-800 rounded-xl p-4 border-2 border-green-500 animate-fade-in">
+            <div className="mt-4 bg-gray-800 rounded-xl p-4 border-2 border-green-500">
               <div className="text-center mb-3">
-                <p className="text-green-400 font-bold text-lg">Kartu Ditemukan!</p>
+                <p className="text-green-400 font-bold text-lg">Kartu Terbaca!</p>
               </div>
-              {/* Tampilkan foto yang di-capture */}
+
+              {/* Foto yang di-capture */}
               {lastCapturedImage && (
                 <div className="flex justify-center mb-3">
                   <img
                     src={lastCapturedImage}
                     alt="Foto kartu"
-                    className="w-32 h-44 object-cover rounded-lg border-2 border-green-500"
+                    className="w-36 h-48 object-cover rounded-lg border-2 border-green-500"
                   />
                 </div>
               )}
-              <div className="flex justify-center mb-3">
-                <Card card={detectedCard} />
+
+              {/* Data kartu yang terbaca AI */}
+              <div className="bg-gray-900 rounded-lg p-3 mb-3 space-y-1">
+                <p className="text-white font-bold text-center text-lg">{detectedCard.name}</p>
+                <div className="flex justify-center gap-3 text-sm">
+                  <span className="text-red-400 font-bold">⚔ ATK: {detectedCard.atk.toLocaleString()}</span>
+                  <span className="text-blue-400 font-bold">🛡 DEF: {detectedCard.def.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-center gap-3 text-xs text-gray-400">
+                  <span>Rarity: <span className="text-yellow-400 font-bold">{detectedCard.rarity}</span></span>
+                  <span>Tipe: <span className={detectedCard.type === "plant" ? "text-green-400" : "text-blue-400"}>{detectedCard.type}</span></span>
+                </div>
+                {detectedCard.id && !detectedCard.id.startsWith("SCAN-") && (
+                  <p className="text-center text-[10px] text-gray-600">{detectedCard.id}</p>
+                )}
               </div>
-              <div className="text-center text-sm text-gray-300 mb-3">
-                <p className="font-bold">{detectedCard.name}</p>
-                <p className="text-xs text-gray-400 mt-1">
-                  ATK: {detectedCard.atk.toLocaleString()} | DEF:{" "}
-                  {detectedCard.def.toLocaleString()} | Rarity: {detectedCard.rarity}
-                </p>
-                <p className="text-[10px] text-gray-600 mt-0.5">{detectedCard.id}</p>
-              </div>
+
               <div className="flex gap-2">
                 <button
                   onClick={confirmDetectedCard}
@@ -375,7 +371,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
                   onClick={rejectDetectedCard}
                   className="flex-1 py-2.5 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition-colors"
                 >
-                  Bukan, Ulang
+                  Salah, Ulang
                 </button>
               </div>
             </div>
@@ -389,7 +385,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       {/* ═══ MANUAL MODE ═══ */}
       {manualMode && !doneScanning && availableCards.length > 0 && (
         <div className="w-full max-w-md mb-4">
-          <p className="text-gray-400 text-sm mb-2 text-center">Pilih kartu yang kamu punya:</p>
+          <p className="text-gray-400 text-sm mb-2 text-center">Pilih kartu dari daftar:</p>
           <div className="flex flex-wrap justify-center gap-2">
             {availableCards.map((card) => (
               <Card key={card.id} card={card} onClick={() => handleManualSelect(card)} />
@@ -406,8 +402,8 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             {scannedCards.map((entry, i) => (
-              <div key={entry.card.id} className="relative">
-                <Card card={{ ...entry.card, capturedImage: entry.capturedImage }} disabled />
+              <div key={entry.card.id + "-" + i} className="relative">
+                <Card card={entry.card} disabled />
                 <button
                   onClick={() => handleRemoveCard(i)}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-600 text-white rounded-full text-xs

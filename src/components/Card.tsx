@@ -55,7 +55,12 @@ export default function Card({ card, onClick, selected, disabled, faceDown }: Ca
       <div className="relative z-10 flex flex-col items-center justify-between w-full h-full p-2">
         {/* Rarity Badge */}
         <div className="self-end">
-          <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-500 text-yellow-950">
+          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+            card.rarity === "SSR" ? "bg-red-500 text-white" :
+            card.rarity === "SR" ? "bg-purple-500 text-white" :
+            card.rarity === "UR" ? "bg-gradient-to-r from-yellow-400 to-orange-500 text-black" :
+            "bg-yellow-500 text-yellow-950"
+          }`}>
             {card.rarity}
           </span>
         </div>
