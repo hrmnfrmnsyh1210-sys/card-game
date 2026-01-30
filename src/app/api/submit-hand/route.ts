@@ -49,9 +49,38 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No valid cards" }, { status: 400 });
   }
 
+  // Debug: check game exists first
+  const { getGame } = await import("@/lib/game-logic");
+  const existingGame = getGame(roomId);
+  if (!existingGame) {
+    return NextResponse.json(
+      { error: `Room "${roomId}" tidak ditemukan. Game mungkin expired. Coba buat room baru.` },
+      { status: 400 }
+    );
+  }
+  if (existingGame.phase !== "scanning") {
+    return NextResponse.json(
+      { error: `Phase saat ini "${existingGame.phase}", bukan "scanning".` },
+      { status: 400 }
+    );
+  }
+  const playerInGame = existingGame.players.find((p) => p?.id === playerId);
+  if (!playerInGame) {
+    return NextResponse.json(
+      { error: `Player "${playerId}" tidak ditemukan di room.` },
+      { status: 400 }
+    );
+  }
+  if (playerInGame.ready) {
+    return NextResponse.json(
+      { error: "Kartu sudah di-submit sebelumnya." },
+      { status: 400 }
+    );
+  }
+
   const game = submitHand(roomId, playerId, handCards);
   if (!game) {
-    return NextResponse.json({ error: "Failed to submit hand" }, { status: 400 });
+    return NextResponse.json({ error: "Gagal submit hand (unknown error)" }, { status: 400 });
   }
 
   if (game.mode === "multiplayer") {
