@@ -6,7 +6,7 @@ import { getPusherClient } from "@/lib/pusher-client";
 import Card from "./Card";
 import HealthBar from "./HealthBar";
 import BattleResult from "./BattleResult";
-import CardScanner from "./CardScanner";
+import CardScanner, { ScannedCard } from "./CardScanner";
 import PunishmentReveal from "./PunishmentReveal";
 import RoomLobby from "./RoomLobby";
 import Timer from "./Timer";
@@ -128,7 +128,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     setGameState(gs);
   }
 
-  async function handleScanComplete(cardIds: string[]) {
+  async function handleScanComplete(cards: ScannedCard[]) {
     setLoading(true);
     try {
       const res = await fetch("/api/submit-hand", {
@@ -137,7 +137,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         body: JSON.stringify({
           roomId: roomInfo.roomId,
           playerId: roomInfo.playerId,
-          cardIds,
+          cards, // { cardId, capturedImage }[]
         }),
       });
       if (res.ok) {

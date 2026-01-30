@@ -5,12 +5,22 @@ import { Card as CardType } from "@/types/game";
 import { ALL_CARDS } from "@/data/cards";
 import Card from "./Card";
 
+export interface ScannedCard {
+  cardId: string;
+  capturedImage: string; // base64 foto dari kamera
+}
+
 interface CardScannerProps {
-  onComplete: (cardIds: string[]) => void;
+  onComplete: (cards: ScannedCard[]) => void;
   maxCards: number;
 }
 
 type ScanStatus = "idle" | "camera-on" | "analyzing" | "detected" | "not-found";
+
+interface ScannedEntry {
+  card: CardType;
+  capturedImage: string;
+}
 
 export default function CardScanner({ onComplete, maxCards }: CardScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -18,8 +28,9 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
   const streamRef = useRef<MediaStream | null>(null);
 
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
-  const [scannedCards, setScannedCards] = useState<CardType[]>([]);
+  const [scannedCards, setScannedCards] = useState<ScannedEntry[]>([]);
   const [detectedCard, setDetectedCard] = useState<CardType | null>(null);
+  const [lastCapturedImage, setLastCapturedImage] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState("");
   const [cameraError, setCameraError] = useState("");
   const [manualMode, setManualMode] = useState(false);
@@ -83,6 +94,8 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
     // Convert to base64 JPEG
     const imageData = canvas.toDataURL("image/jpeg", 0.85);
 
+    // Simpan foto untuk ditampilkan nanti
+    setLastCapturedImage(imageData);
     setScanStatus("analyzing");
     setErrorMsg("");
 
@@ -106,7 +119,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
         const card = data.card as CardType;
 
         // Check duplicate
-        if (scannedCards.find((c) => c.id === card.id)) {
+        if (scannedCards.find((c) => c.card.id === card.id)) {
           setErrorMsg(`${card.name} sudah di-scan!`);
           setScanStatus("not-found");
           setTimeout(() => setScanStatus("camera-on"), 2000);
@@ -129,9 +142,10 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
   function confirmDetectedCard() {
     if (!detectedCard) return;
-    const newCards = [...scannedCards, detectedCard];
+    const newCards = [...scannedCards, { card: detectedCard, capturedImage: lastCapturedImage }];
     setScannedCards(newCards);
     setDetectedCard(null);
+    setLastCapturedImage("");
     if (newCards.length >= maxCards) {
       stopCamera();
       setScanStatus("idle");
@@ -142,12 +156,14 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
   function rejectDetectedCard() {
     setDetectedCard(null);
+    setLastCapturedImage("");
     setScanStatus("camera-on");
   }
 
   function handleManualSelect(card: CardType) {
-    if (scannedCards.find((c) => c.id === card.id)) return;
-    setScannedCards((prev) => [...prev, card]);
+    if (scannedCards.find((c) => c.card.id === card.id)) return;
+    // Manual mode: tidak ada foto, pakai empty string
+    setScannedCards((prev) => [...prev, { card, capturedImage: "" }]);
   }
 
   function handleRemoveCard(index: number) {
@@ -157,11 +173,16 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
   function handleSubmit() {
     if (scannedCards.length === 0) return;
     stopCamera();
-    onComplete(scannedCards.map((c) => c.id));
+    onComplete(
+      scannedCards.map((entry) => ({
+        cardId: entry.card.id,
+        capturedImage: entry.capturedImage,
+      }))
+    );
   }
 
   const availableCards = ALL_CARDS.filter(
-    (c) => !scannedCards.find((sc) => sc.id === c.id)
+    (c) => !scannedCards.find((sc) => sc.card.id === c.id)
   );
   const doneScanning = scannedCards.length >= maxCards;
 
@@ -322,6 +343,16 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
               <div className="text-center mb-3">
                 <p className="text-green-400 font-bold text-lg">Kartu Ditemukan!</p>
               </div>
+              {/* Tampilkan foto yang di-capture */}
+              {lastCapturedImage && (
+                <div className="flex justify-center mb-3">
+                  <img
+                    src={lastCapturedImage}
+                    alt="Foto kartu"
+                    className="w-32 h-44 object-cover rounded-lg border-2 border-green-500"
+                  />
+                </div>
+              )}
               <div className="flex justify-center mb-3">
                 <Card card={detectedCard} />
               </div>
@@ -374,9 +405,9 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
             Kartu kamu ({scannedCards.length}/{maxCards}):
           </p>
           <div className="flex flex-wrap justify-center gap-2">
-            {scannedCards.map((card, i) => (
-              <div key={card.id} className="relative">
-                <Card card={card} disabled />
+            {scannedCards.map((entry, i) => (
+              <div key={entry.card.id} className="relative">
+                <Card card={{ ...entry.card, capturedImage: entry.capturedImage }} disabled />
                 <button
                   onClick={() => handleRemoveCard(i)}
                   className="absolute -top-2 -right-2 w-5 h-5 bg-red-600 text-white rounded-full text-xs

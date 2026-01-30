@@ -9,6 +9,7 @@ export interface Card {
   atk: number;
   def: number;
   image: string;
+  capturedImage?: string; // base64 foto dari kamera saat scan
 }
 
 export interface Player {
