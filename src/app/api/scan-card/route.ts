@@ -37,8 +37,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
     }
 
-    // image is a base64 data URL: "data:image/jpeg;base64,..."
-    // Groq's OpenAI-compatible API accepts image URLs including data URIs
+    // Ensure proper data URI format for Groq
+    // Canvas toDataURL gives "data:image/jpeg;base64,..." which Groq accepts
+    let imageUrl = image;
+
+    // If it's raw base64 without the data URI prefix, add it
+    if (!image.startsWith("data:")) {
+      imageUrl = `data:image/jpeg;base64,${image}`;
+    }
+
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -46,7 +53,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "llama-3.2-11b-vision-preview",
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
         messages: [
           {
             role: "user",
@@ -54,7 +61,7 @@ export async function POST(req: Request) {
               { type: "text", text: SYSTEM_PROMPT },
               {
                 type: "image_url",
-                image_url: { url: image },
+                image_url: { url: imageUrl },
               },
             ],
           },
@@ -68,7 +75,7 @@ export async function POST(req: Request) {
       const errBody = await response.text();
       console.error("Groq API error:", response.status, errBody);
       return NextResponse.json(
-        { error: "AI service error" },
+        { error: `AI service error (${response.status})`, detail: errBody },
         { status: 502 }
       );
     }

@@ -67,13 +67,21 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Capture frame
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    // Capture frame - scale down to max 640px for faster upload
+    const maxDim = 640;
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    if (w > maxDim || h > maxDim) {
+      const scale = maxDim / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
 
     // Convert to base64 JPEG
-    const imageData = canvas.toDataURL("image/jpeg", 0.8);
+    const imageData = canvas.toDataURL("image/jpeg", 0.85);
 
     setScanStatus("analyzing");
     setErrorMsg("");
@@ -269,7 +277,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
                     <div className="text-center">
                       <div className="text-4xl mb-3 animate-pulse">🤖</div>
                       <p className="text-green-400 font-bold">AI sedang mengenali kartu...</p>
-                      <p className="text-gray-400 text-xs mt-1">Menganalisis gambar dengan Gemini</p>
+                      <p className="text-gray-400 text-xs mt-1">Menganalisis gambar dengan AI</p>
                     </div>
                   </div>
                 )}
