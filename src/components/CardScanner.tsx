@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { Card as CardType } from "@/types/game";
-import { ALL_CARDS, matchCardFromText } from "@/data/cards";
+import { ALL_CARDS } from "@/data/cards";
 import Card from "./Card";
 
 interface CardScannerProps {
@@ -10,102 +10,19 @@ interface CardScannerProps {
   maxCards: number;
 }
 
-type ScanStatus = "idle" | "camera-on" | "capturing" | "analyzing" | "detected" | "not-found";
-
-/**
- * Preprocess canvas image for better OCR:
- * - Crop bottom 40% (where card name, stats, ID are)
- * - Convert to grayscale
- * - Increase contrast
- * - Threshold to black/white
- */
-function preprocessForOCR(
-  sourceCanvas: HTMLCanvasElement,
-  targetCanvas: HTMLCanvasElement
-): void {
-  const srcCtx = sourceCanvas.getContext("2d");
-  const tgtCtx = targetCanvas.getContext("2d");
-  if (!srcCtx || !tgtCtx) return;
-
-  const sw = sourceCanvas.width;
-  const sh = sourceCanvas.height;
-
-  // Crop bottom 45% of the card (name + stats area)
-  const cropY = Math.floor(sh * 0.55);
-  const cropH = sh - cropY;
-
-  targetCanvas.width = sw;
-  targetCanvas.height = cropH;
-
-  // Draw cropped region
-  tgtCtx.drawImage(sourceCanvas, 0, cropY, sw, cropH, 0, 0, sw, cropH);
-
-  // Get pixel data
-  const imageData = tgtCtx.getImageData(0, 0, sw, cropH);
-  const data = imageData.data;
-
-  // Convert to grayscale + increase contrast + threshold
-  for (let i = 0; i < data.length; i += 4) {
-    // Grayscale
-    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-
-    // Increase contrast (stretch histogram)
-    const contrast = 1.8;
-    const factor = (259 * (contrast * 128 + 255)) / (255 * (259 - contrast * 128));
-    let val = factor * (gray - 128) + 128;
-    val = Math.max(0, Math.min(255, val));
-
-    // Threshold to B&W for cleaner OCR
-    const bw = val > 140 ? 255 : 0;
-
-    data[i] = bw;
-    data[i + 1] = bw;
-    data[i + 2] = bw;
-  }
-
-  tgtCtx.putImageData(imageData, 0, 0);
-}
+type ScanStatus = "idle" | "camera-on" | "analyzing" | "detected" | "not-found";
 
 export default function CardScanner({ onComplete, maxCards }: CardScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const ocrCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const workerRef = useRef<any>(null);
 
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   const [scannedCards, setScannedCards] = useState<CardType[]>([]);
   const [detectedCard, setDetectedCard] = useState<CardType | null>(null);
-  const [debugText, setDebugText] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [cameraError, setCameraError] = useState("");
-  const [ocrReady, setOcrReady] = useState(false);
   const [manualMode, setManualMode] = useState(false);
-
-  // Initialize Tesseract worker
-  useEffect(() => {
-    let cancelled = false;
-
-    async function initWorker() {
-      const Tesseract = await import("tesseract.js");
-      const worker = await Tesseract.createWorker("eng", 1, {
-        logger: () => {},
-      });
-      if (!cancelled) {
-        workerRef.current = worker;
-        setOcrReady(true);
-      }
-    }
-
-    initWorker();
-
-    return () => {
-      cancelled = true;
-      if (workerRef.current) {
-        workerRef.current.terminate();
-      }
-    };
-  }, []);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -118,7 +35,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
     return () => stopCamera();
   }, [stopCamera]);
 
-  // Attach stream to video element when both are ready
+  // Attach stream to video when element mounts
   useEffect(() => {
     if (videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
@@ -132,7 +49,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
         video: {
           facingMode: "environment",
           width: { ideal: 1280 },
-          height: { ideal: 720 },
+          height: { ideal: 960 },
         },
       });
       streamRef.current = stream;
@@ -143,75 +60,62 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
   }
 
   async function captureAndAnalyze() {
-    if (!videoRef.current || !canvasRef.current || !ocrCanvasRef.current || !workerRef.current) return;
-
-    setScanStatus("capturing");
+    if (!videoRef.current || !canvasRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ocrCanvas = ocrCanvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Capture full frame
+    // Capture frame
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
 
+    // Convert to base64 JPEG
+    const imageData = canvas.toDataURL("image/jpeg", 0.8);
+
     setScanStatus("analyzing");
+    setErrorMsg("");
 
     try {
-      // ── Pass 1: OCR on preprocessed bottom crop (name, stats, ID) ──
-      preprocessForOCR(canvas, ocrCanvas);
-      const result1 = await workerRef.current.recognize(ocrCanvas);
-      const text1 = result1.data.text;
+      const res = await fetch("/api/scan-card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: imageData }),
+      });
 
-      let matched = matchCardFromText(text1);
+      const data = await res.json();
 
-      // ── Pass 2: If no match, OCR on full image (inverted for light text) ──
-      if (!matched) {
-        // Try full image with inversion (white text on dark bg → dark on white)
-        const fullCtx = ocrCanvas.getContext("2d");
-        ocrCanvas.width = canvas.width;
-        ocrCanvas.height = canvas.height;
-        fullCtx!.drawImage(canvas, 0, 0);
-        const fullData = fullCtx!.getImageData(0, 0, ocrCanvas.width, ocrCanvas.height);
-        const d = fullData.data;
-        for (let i = 0; i < d.length; i += 4) {
-          const gray = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-          const inv = 255 - gray;
-          const bw = inv > 100 ? 0 : 255;
-          d[i] = bw;
-          d[i + 1] = bw;
-          d[i + 2] = bw;
-        }
-        fullCtx!.putImageData(fullData, 0, 0);
-
-        const result2 = await workerRef.current.recognize(ocrCanvas);
-        const text2 = result2.data.text;
-        matched = matchCardFromText(text1 + " " + text2);
-        setDebugText(text1 + " | " + text2);
-      } else {
-        setDebugText(text1);
+      if (!res.ok) {
+        setErrorMsg(data.error || "Gagal menganalisis");
+        setScanStatus("not-found");
+        setTimeout(() => setScanStatus("camera-on"), 2500);
+        return;
       }
 
-      if (matched) {
-        if (scannedCards.find((c) => c.id === matched!.id)) {
+      if (data.success && data.card) {
+        const card = data.card as CardType;
+
+        // Check duplicate
+        if (scannedCards.find((c) => c.id === card.id)) {
+          setErrorMsg(`${card.name} sudah di-scan!`);
           setScanStatus("not-found");
-          setDebugText(`${matched.name} sudah di-scan!`);
           setTimeout(() => setScanStatus("camera-on"), 2000);
           return;
         }
-        setDetectedCard(matched);
+
+        setDetectedCard(card);
         setScanStatus("detected");
       } else {
+        setErrorMsg("AI tidak bisa mengenali kartu ini");
         setScanStatus("not-found");
         setTimeout(() => setScanStatus("camera-on"), 2500);
       }
     } catch {
+      setErrorMsg("Gagal menghubungi server");
       setScanStatus("not-found");
-      setDebugText("Gagal menganalisis gambar");
-      setTimeout(() => setScanStatus("camera-on"), 2000);
+      setTimeout(() => setScanStatus("camera-on"), 2500);
     }
   }
 
@@ -259,7 +163,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       <p className="text-gray-400 text-sm mb-4">
         {manualMode
           ? "Pilih kartu dari daftar"
-          : "Arahkan kamera ke kartu, lalu tekan tombol capture"}{" "}
+          : "Foto kartu fisikmu, AI akan mengenali kartunya"}{" "}
         ({scannedCards.length}/{maxCards})
       </p>
 
@@ -294,22 +198,13 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
           {scanStatus === "idle" && !cameraError && (
             <div className="bg-gray-800 rounded-xl p-8 text-center">
               <div className="text-4xl mb-3">📷</div>
-              {!ocrReady ? (
-                <div>
-                  <div className="text-gray-400 text-sm mb-2">Mempersiapkan scanner...</div>
-                  <div className="w-48 h-2 bg-gray-700 rounded-full mx-auto overflow-hidden">
-                    <div className="h-full bg-green-500 rounded-full animate-pulse w-2/3" />
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={startCamera}
-                  className="px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold
-                    rounded-lg hover:from-green-500 hover:to-green-600 transition-all"
-                >
-                  Buka Kamera
-                </button>
-              )}
+              <button
+                onClick={startCamera}
+                className="px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold
+                  rounded-lg hover:from-green-500 hover:to-green-600 transition-all"
+              >
+                Buka Kamera
+              </button>
             </div>
           )}
 
@@ -317,18 +212,28 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
           {cameraError && (
             <div className="bg-gray-800 rounded-xl p-6 text-center">
               <p className="text-red-400 text-sm mb-3">{cameraError}</p>
-              <button
-                onClick={startCamera}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm"
-              >
-                Coba Lagi
-              </button>
+              <div className="flex gap-2 justify-center">
+                <button
+                  onClick={startCamera}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm"
+                >
+                  Coba Lagi
+                </button>
+                <button
+                  onClick={() => {
+                    setManualMode(true);
+                    setCameraError("");
+                  }}
+                  className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg text-sm"
+                >
+                  Pilih Manual
+                </button>
+              </div>
             </div>
           )}
 
           {/* Camera View */}
           {(scanStatus === "camera-on" ||
-            scanStatus === "capturing" ||
             scanStatus === "analyzing" ||
             scanStatus === "detected" ||
             scanStatus === "not-found") && (
@@ -344,18 +249,15 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
                 {/* Scan Frame Overlay */}
                 <div className="absolute inset-0 pointer-events-none">
-                  <div className="absolute top-4 left-4 w-10 h-10 border-t-2 border-l-2 border-green-400 rounded-tl" />
-                  <div className="absolute top-4 right-4 w-10 h-10 border-t-2 border-r-2 border-green-400 rounded-tr" />
-                  <div className="absolute bottom-4 left-4 w-10 h-10 border-b-2 border-l-2 border-green-400 rounded-bl" />
-                  <div className="absolute bottom-4 right-4 w-10 h-10 border-b-2 border-r-2 border-green-400 rounded-br" />
-
-                  {/* Bottom area highlight (where text is read) */}
-                  <div className="absolute bottom-0 left-0 right-0 h-[45%] border-t-2 border-dashed border-yellow-400/40" />
+                  <div className="absolute top-4 left-4 w-12 h-12 border-t-3 border-l-3 border-green-400 rounded-tl-lg" />
+                  <div className="absolute top-4 right-4 w-12 h-12 border-t-3 border-r-3 border-green-400 rounded-tr-lg" />
+                  <div className="absolute bottom-4 left-4 w-12 h-12 border-b-3 border-l-3 border-green-400 rounded-bl-lg" />
+                  <div className="absolute bottom-4 right-4 w-12 h-12 border-b-3 border-r-3 border-green-400 rounded-br-lg" />
 
                   {scanStatus === "camera-on" && (
-                    <div className="absolute bottom-[47%] left-0 right-0 text-center">
-                      <span className="text-yellow-400/70 text-[10px] bg-black/50 px-2 py-0.5 rounded">
-                        pastikan nama & angka kartu terlihat di area ini
+                    <div className="absolute bottom-8 left-0 right-0 text-center">
+                      <span className="text-white/80 text-xs bg-black/60 px-3 py-1.5 rounded-full">
+                        Posisikan kartu di dalam bingkai
                       </span>
                     </div>
                   )}
@@ -363,23 +265,25 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
 
                 {/* Analyzing overlay */}
                 {scanStatus === "analyzing" && (
-                  <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                  <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
                     <div className="text-center">
-                      <div className="text-3xl animate-spin mb-2">🔍</div>
-                      <p className="text-green-400 text-sm font-bold">Menganalisis kartu...</p>
-                      <p className="text-gray-500 text-xs mt-1">Membaca teks & angka</p>
+                      <div className="text-4xl mb-3 animate-pulse">🤖</div>
+                      <p className="text-green-400 font-bold">AI sedang mengenali kartu...</p>
+                      <p className="text-gray-400 text-xs mt-1">Menganalisis gambar dengan Gemini</p>
                     </div>
                   </div>
                 )}
 
                 {/* Not found overlay */}
                 {scanStatus === "not-found" && (
-                  <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                    <div className="text-center px-4">
+                  <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                    <div className="text-center px-6">
                       <div className="text-3xl mb-2">❌</div>
-                      <p className="text-red-400 text-sm font-bold">Kartu tidak dikenali</p>
+                      <p className="text-red-400 font-bold text-sm">
+                        {errorMsg || "Kartu tidak dikenali"}
+                      </p>
                       <p className="text-gray-400 text-xs mt-1">
-                        Coba dekatkan kamera ke bagian nama & angka kartu
+                        Pastikan seluruh kartu terlihat jelas
                       </p>
                     </div>
                   </div>
@@ -391,26 +295,15 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
                 <div className="flex justify-center mt-3">
                   <button
                     onClick={captureAndAnalyze}
-                    disabled={!ocrReady}
                     className="w-16 h-16 rounded-full bg-white border-4 border-green-500
-                      hover:border-green-400 transition-colors flex items-center justify-center
-                      shadow-lg active:scale-95 disabled:opacity-50"
+                      hover:border-green-400 transition-all flex items-center justify-center
+                      shadow-lg active:scale-90"
                   >
-                    <div className="w-12 h-12 rounded-full bg-green-500" />
+                    <div className="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center">
+                      <span className="text-white text-xl">📸</span>
+                    </div>
                   </button>
                 </div>
-              )}
-
-              {/* Debug OCR Text (kecil, untuk troubleshooting) */}
-              {debugText && (scanStatus === "not-found" || scanStatus === "detected") && (
-                <details className="mt-2">
-                  <summary className="text-gray-600 text-[10px] cursor-pointer">
-                    Debug: OCR result
-                  </summary>
-                  <pre className="text-gray-600 text-[9px] mt-1 bg-gray-800 p-2 rounded max-h-20 overflow-auto whitespace-pre-wrap">
-                    {debugText}
-                  </pre>
-                </details>
               )}
             </div>
           )}
@@ -419,30 +312,31 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
           {scanStatus === "detected" && detectedCard && (
             <div className="mt-4 bg-gray-800 rounded-xl p-4 border-2 border-green-500 animate-fade-in">
               <div className="text-center mb-3">
-                <p className="text-green-400 font-bold">Kartu Terdeteksi!</p>
+                <p className="text-green-400 font-bold text-lg">Kartu Ditemukan!</p>
               </div>
               <div className="flex justify-center mb-3">
                 <Card card={detectedCard} />
               </div>
-              <div className="text-center text-xs text-gray-400 mb-3">
-                <p>
+              <div className="text-center text-sm text-gray-300 mb-3">
+                <p className="font-bold">{detectedCard.name}</p>
+                <p className="text-xs text-gray-400 mt-1">
                   ATK: {detectedCard.atk.toLocaleString()} | DEF:{" "}
-                  {detectedCard.def.toLocaleString()} | {detectedCard.rarity}
+                  {detectedCard.def.toLocaleString()} | Rarity: {detectedCard.rarity}
                 </p>
-                <p className="text-gray-600 mt-0.5">ID: {detectedCard.id}</p>
+                <p className="text-[10px] text-gray-600 mt-0.5">{detectedCard.id}</p>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={confirmDetectedCard}
-                  className="flex-1 py-2.5 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500"
+                  className="flex-1 py-2.5 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 transition-colors"
                 >
                   Benar! Tambahkan
                 </button>
                 <button
                   onClick={rejectDetectedCard}
-                  className="flex-1 py-2.5 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600"
+                  className="flex-1 py-2.5 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition-colors"
                 >
-                  Salah, Ulang
+                  Bukan, Ulang
                 </button>
               </div>
             </div>
@@ -450,9 +344,8 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
         </div>
       )}
 
-      {/* Hidden canvases */}
+      {/* Hidden canvas */}
       <canvas ref={canvasRef} className="hidden" />
-      <canvas ref={ocrCanvasRef} className="hidden" />
 
       {/* ═══ MANUAL MODE ═══ */}
       {manualMode && !doneScanning && availableCards.length > 0 && (
@@ -470,7 +363,7 @@ export default function CardScanner({ onComplete, maxCards }: CardScannerProps) 
       {scannedCards.length > 0 && (
         <div className="w-full max-w-md mt-3">
           <p className="text-gray-400 text-sm mb-2 text-center">
-            Kartu yang sudah di-scan ({scannedCards.length}/{maxCards}):
+            Kartu kamu ({scannedCards.length}/{maxCards}):
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             {scannedCards.map((card, i) => (
