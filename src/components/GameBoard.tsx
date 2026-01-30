@@ -24,6 +24,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
   const [lastBattle, setLastBattle] = useState<BattleResultType | null>(null);
   const [loading, setLoading] = useState(false);
   const [showBattle, setShowBattle] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Simpan foto kartu di client saja (tidak dikirim ke server, terlalu besar)
   const capturedImagesRef = useRef<Record<string, string>>({});
@@ -147,6 +148,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
 
   async function handleScanComplete(cards: ScannedCard[]) {
     setLoading(true);
+    setSubmitError("");
 
     // Simpan foto di client (jangan kirim ke server, base64 terlalu besar)
     for (const c of cards) {
@@ -156,30 +158,41 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     }
 
     try {
-      // Kirim card data TANPA capturedImage ke server
+      const payload = {
+        roomId: roomInfo.roomId,
+        playerId: roomInfo.playerId,
+        scannedCards: cards.map((c) => ({
+          card: {
+            id: c.card.id,
+            name: c.card.name,
+            type: c.card.type,
+            rarity: c.card.rarity,
+            atk: c.card.atk,
+            def: c.card.def,
+            image: "",
+          },
+        })),
+      };
+
+      console.log("Submitting hand:", JSON.stringify(payload).length, "bytes", payload);
+
       const res = await fetch("/api/submit-hand", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomId: roomInfo.roomId,
-          playerId: roomInfo.playerId,
-          scannedCards: cards.map((c) => ({
-            card: {
-              id: c.card.id,
-              name: c.card.name,
-              type: c.card.type,
-              rarity: c.card.rarity,
-              atk: c.card.atk,
-              def: c.card.def,
-              image: c.card.image || "",
-            },
-          })),
-        }),
+        body: JSON.stringify(payload),
       });
+
+      const data = await res.json();
+      console.log("Submit response:", res.status, data);
+
       if (res.ok) {
-        const data = await res.json();
         setGameState(injectCapturedImages(data.game));
+      } else {
+        setSubmitError(data.error || `Server error: ${res.status}`);
       }
+    } catch (err) {
+      console.error("Submit hand error:", err);
+      setSubmitError("Gagal mengirim kartu: " + String(err));
     } finally {
       setLoading(false);
     }
@@ -276,7 +289,25 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         </div>
       );
     }
-    return <CardScanner onComplete={handleScanComplete} maxCards={4} />;
+    return (
+      <div>
+        <CardScanner onComplete={handleScanComplete} maxCards={4} />
+        {loading && (
+          <div className="fixed bottom-4 left-0 right-0 flex justify-center z-50">
+            <div className="bg-blue-900 text-blue-200 px-4 py-2 rounded-lg text-sm animate-pulse">
+              Mengirim kartu ke server...
+            </div>
+          </div>
+        )}
+        {submitError && (
+          <div className="fixed bottom-4 left-0 right-0 flex justify-center z-50">
+            <div className="bg-red-900 text-red-200 px-4 py-2 rounded-lg text-sm max-w-sm text-center">
+              {submitError}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   // ── FINISHED ──
