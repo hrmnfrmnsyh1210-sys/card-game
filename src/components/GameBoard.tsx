@@ -25,8 +25,24 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
   const [loading, setLoading] = useState(false);
   const [showBattle, setShowBattle] = useState(false);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Simpan foto kartu di client saja (tidak dikirim ke server, terlalu besar)
+  const capturedImagesRef = useRef<Record<string, string>>({});
 
   const isSolo = roomInfo.mode === "solo";
+
+  // Inject client-side captured images into game state
+  function injectCapturedImages(gs: GameState): GameState {
+    const images = capturedImagesRef.current;
+    if (Object.keys(images).length === 0) return gs;
+    const me = gs.players[roomInfo.playerIndex];
+    if (me) {
+      me.hand = me.hand.map((card) => ({
+        ...card,
+        capturedImage: images[card.id] || card.capturedImage,
+      }));
+    }
+    return gs;
+  }
 
   const fetchGameState = useCallback(async () => {
     const res = await fetch("/api/game-state", {
@@ -39,8 +55,9 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     });
     if (res.ok) {
       const data = await res.json();
-      setGameState(data.game);
+      setGameState(injectCapturedImages(data.game));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomInfo]);
 
   // Initial fetch
@@ -58,7 +75,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
     channel.bind(
       `state-${roomInfo.playerId}`,
       (data: { game: GameState; battleResult?: BattleResultType }) => {
-        setGameState(data.game);
+        setGameState(injectCapturedImages(data.game));
         if (data.battleResult) {
           setLastBattle(data.battleResult);
           setShowBattle(true);
@@ -103,7 +120,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.game) setGameState(data.game);
+          if (data.game) setGameState(injectCapturedImages(data.game));
           if (data.battleResult) {
             setLastBattle(data.battleResult);
             setShowBattle(true);
@@ -130,7 +147,16 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
 
   async function handleScanComplete(cards: ScannedCard[]) {
     setLoading(true);
+
+    // Simpan foto di client (jangan kirim ke server, base64 terlalu besar)
+    for (const c of cards) {
+      if (c.capturedImage) {
+        capturedImagesRef.current[c.card.id] = c.capturedImage;
+      }
+    }
+
     try {
+      // Kirim card data TANPA capturedImage ke server
       const res = await fetch("/api/submit-hand", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -138,14 +164,21 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
           roomId: roomInfo.roomId,
           playerId: roomInfo.playerId,
           scannedCards: cards.map((c) => ({
-            card: c.card,
-            capturedImage: c.capturedImage,
+            card: {
+              id: c.card.id,
+              name: c.card.name,
+              type: c.card.type,
+              rarity: c.card.rarity,
+              atk: c.card.atk,
+              def: c.card.def,
+              image: c.card.image || "",
+            },
           })),
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setGameState(data.game);
+        setGameState(injectCapturedImages(data.game));
       }
     } finally {
       setLoading(false);
@@ -168,7 +201,7 @@ export default function GameBoard({ roomInfo }: GameBoardProps) {
       });
       if (res.ok) {
         const data = await res.json();
-        setGameState(data.game);
+        setGameState(injectCapturedImages(data.game));
         setHasSubmitted(true);
         if (data.battleResult) {
           setLastBattle(data.battleResult);
